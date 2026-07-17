@@ -264,6 +264,7 @@
     box-shadow:inset 0 1px 0 #fff;
   }
   .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;}
+  .slotlbl{flex:none;width:110px;font-size:11px;font-weight:bold;color:var(--dim);}
   input[type=text], select{
     background:#fff;
     border:1px solid;
@@ -648,10 +649,7 @@
       </div>
       <div id="systemPicker" class="planpicker"></div>
       <div class="hint" style="margin-top:-4px;">(<span id="ownedSysCount">0</span> platform(s) selected)</div>
-      <div class="hint" style="margin-top:2px;">Consoles change as you play through the game, so if you just unlocked or lost a platform, tick/untick it above then hit <b>Generate plan</b> (or the button below) - it rebuilds from your current topic picks below, they're not affected by changing platforms. Only <b>Delete plan</b> clears your topic picks.</div>
-      <div class="row">
-        <button onclick="generatePlan()" style="flex:none;">Regenerate plan with these platforms</button>
-      </div>
+      <div class="hint" style="margin-top:2px;">Consoles change as you play through the game, so if you just unlocked or lost a platform, tick/untick it above then hit <b>Generate plan</b> down below - it's always a full fresh rebuild from your current topic picks, they're not affected by changing platforms. Only <b>Delete plan</b> clears your topic picks.</div>
 
       <div class="stagehead">Topics for this plan</div>
       <div class="row">
@@ -661,17 +659,29 @@
       </div>
       <div id="planPicker" class="planpicker"></div>
 
-      <div class="stagehead">Recently made in-game (optional)</div>
-      <div class="hint" style="margin-top:2px;">Tick whatever topics you've literally just finished as real games (your last 3-4). The next plan you generate will avoid opening with those topics or their genre in the first few slots - they're not excluded, just pushed back until it's fine to repeat. This list is separate from your topic picks above, so it only kicks in once you hit Generate.</div>
-      <div class="row">
-        <input type="text" id="recentFilter" placeholder="Filter topics...">
-        <button onclick="recentSelectNone()" style="flex:none;">Clear picks</button>
+      <div class="stagehead">Last few games you actually made (optional)</div>
+      <div class="hint" style="margin-top:2px;">Fill in your most recent real games, most recent first, with the exact topic and genre you used (not necessarily this tool's "best" pick). The next plan you generate spaces those genres out from slot 1 the same way it spaces out any repeat - the 1st most recent is held back longest, the 3rd is barely restricted. If a topic here is still ticked above, it's also individually held out of the opening slots so a fresh plan doesn't reopen with the exact game you just built.</div>
+      <div class="row" style="margin-bottom:6px;">
+        <span class="slotlbl">1st most recent</span>
+        <input type="text" id="recentTopic0" list="topicList" placeholder="Topic (e.g. Prison)" oninput="updateRecentSlot(0,'topic',this.value)">
+        <select id="recentGenre0" onchange="updateRecentSlot(0,'genre',this.value)"></select>
       </div>
-      <div id="recentPicker" class="planpicker"></div>
-      <div class="hint" style="margin-top:-4px;">(<span id="recentCount">0</span> topic(s) marked as recently made)</div>
+      <div class="row" style="margin-bottom:6px;">
+        <span class="slotlbl">2nd most recent</span>
+        <input type="text" id="recentTopic1" list="topicList" placeholder="Topic (e.g. Space)" oninput="updateRecentSlot(1,'topic',this.value)">
+        <select id="recentGenre1" onchange="updateRecentSlot(1,'genre',this.value)"></select>
+      </div>
+      <div class="row">
+        <span class="slotlbl">3rd most recent</span>
+        <input type="text" id="recentTopic2" list="topicList" placeholder="Topic (e.g. Detective)" oninput="updateRecentSlot(2,'topic',this.value)">
+        <select id="recentGenre2" onchange="updateRecentSlot(2,'genre',this.value)"></select>
+      </div>
+      <div class="row">
+        <button onclick="clearRecentSlots()" style="flex:none;">Clear these 3</button>
+      </div>
 
       <div class="row">
-        <button onclick="generatePlan()">Generate plan (<span id="planSelCount">0</span> topics)</button>
+        <button onclick="generatePlan()" title="Always does a full fresh rebuild from whatever's currently ticked - safe to click any time, changed or not.">Generate plan (<span id="planSelCount">0</span> topics)</button>
         <button onclick="clearPlanProgress()" style="flex:none;">Uncross all</button>
         <button onclick="deletePlan()" style="flex:none;">Delete plan</button>
       </div>
@@ -793,6 +803,9 @@ document.addEventListener('DOMContentLoaded', ()=>{
   fillDatalist('systemList', Object.keys(SYSTEMS));
   fillSelect('genreInput', GENRES, 'Select genre...');
   fillSelect('genreInput2', GENRES, '(optional) 2nd genre for combo');
+  fillSelect('recentGenre0', GENRES, 'Genre used...');
+  fillSelect('recentGenre1', GENRES, 'Genre used...');
+  fillSelect('recentGenre2', GENRES, 'Genre used...');
   document.getElementById('footnote').innerHTML =
     "Note: the source sheet's 'Multi-GenreDev' table only lists Action / Adventure / RPG as the primary (1st-picked) genre. " +
     "When you combo Simulation, Strategy or Casual as the <em>primary</em> genre, dual-genre stage data isn't available in your sheet, " +
@@ -813,15 +826,14 @@ document.addEventListener('DOMContentLoaded', ()=>{
   document.getElementById('systemInput').addEventListener('keydown', e=>{ if(e.key==='Enter') runSystem(); });
   document.getElementById('planFilter').addEventListener('input', e=>{ fillPlanPicker(e.target.value); });
   document.getElementById('systemFilter').addEventListener('input', e=>{ fillSystemPicker(e.target.value); });
-  document.getElementById('recentFilter').addEventListener('input', e=>{ fillRecentPicker(e.target.value); });
 
   loadCombosBuiltFromStorage();
   loadOwnedSystemsFromStorage();
   loadPlanFromStorage();
-  loadRecentTopicsFromStorage();
+  loadRecentSlotsFromStorage();
   fillPlanPicker('');
   fillSystemPicker('');
-  fillRecentPicker('');
+  renderRecentSlots();
   renderPlan();
 });
 
@@ -1087,7 +1099,7 @@ let planDragIndex = null;
 let ownedSystems = new Set(); // platforms/consoles the user says they own; empty = no restriction
 let planSkipped = null;       // {noPlatform:[topic,...], genreClash:[topic,...]} from the most recent Generate
 let combosBuiltTotal = 0;     // lifetime "COMBOS BUILT" counter, persisted across sessions
-let recentTopics = new Set(); // topics you've just finished as real in-game games; kept separate from planTopics on purpose
+let recentSlots = [ {topic:'', genre:''}, {topic:'', genre:''}, {topic:'', genre:''} ]; // index0 = 1st (most) recent ... index2 = 3rd most recent
 
 function loadCombosBuiltFromStorage(){
   try{
@@ -1214,40 +1226,38 @@ function planSelectNone(){
   fillPlanPicker(document.getElementById('planFilter').value);
 }
 
-function loadRecentTopicsFromStorage(){
+function loadRecentSlotsFromStorage(){
   try{
-    const t = JSON.parse(localStorage.getItem('gdt_recent_topics') || '[]');
-    recentTopics = new Set(t);
-  }catch(e){ recentTopics = new Set(); }
+    const s = JSON.parse(localStorage.getItem('gdt_recent_slots') || 'null');
+    if(Array.isArray(s) && s.length === 3){
+      recentSlots = s.map(x => ({ topic: (x && x.topic) || '', genre: (x && x.genre) || '' }));
+    }
+  }catch(e){ /* keep defaults */ }
 }
 
-function saveRecentTopicsToStorage(){
-  try{ localStorage.setItem('gdt_recent_topics', JSON.stringify([...recentTopics])); }catch(e){ /* storage unavailable */ }
+function saveRecentSlotsToStorage(){
+  try{ localStorage.setItem('gdt_recent_slots', JSON.stringify(recentSlots)); }catch(e){ /* storage unavailable */ }
 }
 
-function fillRecentPicker(filterText){
-  const box = document.getElementById('recentPicker');
-  if(!box) return;
-  const names = Object.keys(TOPICS).sort();
-  const f = (filterText || '').trim().toLowerCase();
-  const shown = f ? names.filter(n => n.toLowerCase().includes(f)) : names;
-  box.innerHTML = shown.length
-    ? shown.map(n => `<span class="pill clickable ${recentTopics.has(n)?'selected':''}" onclick="toggleRecentTopic('${n.replace(/'/g,"\\'")}')">${n}</span>`).join('')
-    : `<span class="empty">No topics match.</span>`;
-  const cEl = document.getElementById('recentCount');
-  if(cEl) cEl.textContent = recentTopics.size;
+function renderRecentSlots(){
+  recentSlots.forEach((slot, i) => {
+    const tEl = document.getElementById('recentTopic'+i);
+    const gEl = document.getElementById('recentGenre'+i);
+    if(tEl) tEl.value = slot.topic || '';
+    if(gEl) gEl.value = slot.genre || '';
+  });
 }
 
-function toggleRecentTopic(name){
-  if(recentTopics.has(name)) recentTopics.delete(name); else recentTopics.add(name);
-  saveRecentTopicsToStorage();
-  fillRecentPicker(document.getElementById('recentFilter').value);
+function updateRecentSlot(i, field, value){
+  if(!recentSlots[i]) return;
+  recentSlots[i][field] = value;
+  saveRecentSlotsToStorage();
 }
 
-function recentSelectNone(){
-  recentTopics.clear();
-  saveRecentTopicsToStorage();
-  fillRecentPicker(document.getElementById('recentFilter').value);
+function clearRecentSlots(){
+  recentSlots = [ {topic:'', genre:''}, {topic:'', genre:''}, {topic:'', genre:''} ];
+  saveRecentSlotsToStorage();
+  renderRecentSlots();
 }
 
 function bestForTopic(topic, owned){
@@ -1334,9 +1344,8 @@ function bestForTopic(topic, owned){
 function arrangeGenreSpaced(items, minGap, opts){
   minGap = minGap || 4;
   opts = opts || {};
-  const seedGenres = opts.seedGenres || [];   // genres treated as if just placed, so they're spaced-out from slot 1
-  const coolTopics = opts.coolTopics || new Set(); // exact topics to keep out of the first `coolSlots` slots if at all avoidable
-  const coolSlots = opts.coolSlots || minGap;
+  const seedGenres = opts.seedGenres || [];      // genres treated as if just placed, so they're spaced-out from slot 1
+  const coolMap = opts.coolMap || new Map();     // topic -> earliest 1-indexed slot number it's allowed to land in
 
   const groups = {};
   items.forEach(it => { (groups[it.genre] = groups[it.genre] || []).push(it); });
@@ -1363,17 +1372,20 @@ function arrangeGenreSpaced(items, minGap, opts){
     const keys = Object.keys(groups).filter(g => groups[g].length > 0);
     keys.forEach(g => { current[g] += weight[g]; });
 
+    const slotNumber = result.length + 1; // 1-indexed slot about to be filled
     const window = recent.slice(-(minGap - 1));
     let eligible = keys.filter(g => !window.includes(g));
 
-    // Inside the cooldown window, a genre only counts as eligible if it has
-    // at least one topic that ISN'T a topic you literally just finished -
-    // otherwise the plan would be forced to open with something you just
-    // played. Once every topic left in a genre is a recent one, or once
-    // we're past the cooldown window, this restriction relaxes again.
-    if(result.length < coolSlots && coolTopics.size){
-      const notJustPlayed = eligible.filter(g => groups[g].some(it => !coolTopics.has(it.topic)));
-      if(notJustPlayed.length > 0) eligible = notJustPlayed;
+    // A topic with a cooldown entry can't fill a slot earlier than its
+    // threshold - the most-recently-played topic has the highest threshold
+    // (held back longest), older ones decay down toward "no restriction".
+    // A genre only counts as eligible this round if it has at least one
+    // topic that's actually allowed in this slot; if none of the eligible
+    // genres qualify, the restriction relaxes rather than deadlocking.
+    if(coolMap.size){
+      const usable = g => groups[g].some(it => !coolMap.has(it.topic) || slotNumber >= coolMap.get(it.topic));
+      const withUsable = eligible.filter(usable);
+      if(withUsable.length > 0) eligible = withUsable;
     }
 
     if(eligible.length === 0){
@@ -1388,8 +1400,8 @@ function arrangeGenreSpaced(items, minGap, opts){
     const pick = eligible[0];
 
     let item;
-    if(result.length < coolSlots && coolTopics.size){
-      const idx = groups[pick].findIndex(it => !coolTopics.has(it.topic));
+    if(coolMap.size){
+      const idx = groups[pick].findIndex(it => !coolMap.has(it.topic) || slotNumber >= coolMap.get(it.topic));
       item = idx >= 0 ? groups[pick].splice(idx, 1)[0] : groups[pick].shift();
     } else {
       item = groups[pick].shift();
@@ -1424,15 +1436,26 @@ function generatePlan(){
   const noPlatform = candidates.filter(c => !c.compatible);
   const usable = candidates.filter(c => c.compatible);
 
-  // Anything ticked in "Recently made in-game" contributes its genre as a
-  // seed (so that genre gets spaced out from slot 1) and, if it's also in
-  // this plan, gets held back from the opening slots as an exact topic too.
-  const seedGenres = [...recentTopics]
-    .map(t => TOPICS[t] ? bestForTopic(t, ownedSystems).genre : null)
-    .filter(Boolean);
-  const coolTopics = new Set([...recentTopics].filter(t => planTopics.has(t)));
+  // The "last few games" slots (index 0 = 1st/most recent ... last = oldest
+  // of the three) feed the arrangement two ways: every filled-in genre seeds
+  // the spacing rule (walked oldest-to-newest so the most recent one stays
+  // in the lookback window longest and ages out last, exactly matching how
+  // real recency should decay), and any slot's topic - if it's still ticked
+  // in this plan - gets an explicit earliest-slot threshold that's highest
+  // for the most recent game and lowest for the oldest of the three.
+  const rankTotal = recentSlots.length;
+  const seedGenres = [];
+  const coolMap = new Map();
+  for(let idx = rankTotal - 1; idx >= 0; idx--){
+    const slot = recentSlots[idx];
+    if(!slot) continue;
+    if(slot.genre) seedGenres.push(slot.genre);
+    if(slot.topic && planTopics.has(slot.topic)){
+      coolMap.set(slot.topic, rankTotal - idx);
+    }
+  }
 
-  const {result, pruned} = arrangeGenreSpaced(usable, 4, {seedGenres, coolTopics, coolSlots: 4});
+  const {result, pruned} = arrangeGenreSpaced(usable, 4, {seedGenres, coolMap});
   planItems = result;
   planSkipped = {
     noPlatform: noPlatform.map(c => c.topic),
