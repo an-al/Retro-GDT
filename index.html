@@ -661,7 +661,7 @@
         <button onclick="clearPlanProgress()" style="flex:none;">Uncross all</button>
         <button onclick="deletePlan()" style="flex:none;">Delete plan</button>
       </div>
-      <div class="hint" style="margin-top:2px;">Each combo shows the topic's single best genre + rating, and the platforms that match it - a +++ badge means a perfect match and is shown when at least one exists; if none are perfect, the ++ (still-solid) platforms are listed plain with no badge. Order is arranged so no 3 combos in a row repeat a genre. Any topic that can't be placed without breaking that rule, or that has no strong match among your owned platforms, gets left out of the plan - you'll see a note above the list when that happens.</div>
+      <div class="hint" style="margin-top:2px;">Each combo shows the topic's single best genre + rating, and the platforms that match it - a +++ badge means a perfect match and is shown when at least one exists; if none are perfect, the ++ (still-solid) platforms are listed plain with no badge. Order is arranged so no 4 combos in a row repeat a genre. Any topic that can't be placed without breaking that rule, or that has no strong match among your owned platforms, gets left out of the plan - you'll see a note above the list when that happens.</div>
       <div id="planResult" class="result"></div>
     </div>
 
@@ -732,6 +732,17 @@ function ratingVals(rowArr){ return RATINGS.map((r,i)=>[r,rowArr[6+i]]); }
 function topOf(pairs){
   const max = Math.max(...pairs.map(p=>p[1]));
   return {max, best: pairs.filter(p=>p[1]===max).map(p=>p[0])};
+}
+
+// Simple, stable string hash - used to break genre ties fairly (see
+// bestForTopic). Same topic name always hashes to the same number, so
+// results are consistent across regenerates, but the choice isn't
+// hard-coded to always favour whichever genre happens to come first in
+// the GENRES array.
+function hashStr(s){
+  let h = 0;
+  for(let i = 0; i < s.length; i++){ h = (h * 31 + s.charCodeAt(i)) | 0; }
+  return Math.abs(h);
 }
 
 function getIcon(v, isStage = false) {
@@ -1189,7 +1200,15 @@ function bestForTopic(topic, owned){
   const row = TOPICS[topic];
   const gTop = topOf(genreVals(row));
   const rTop = topOf(ratingVals(row));
-  const genre = gTop.best[0];
+  // Most topics in the sheet actually tie between several genres for their
+  // top score - picking best[0] every time silently always favours
+  // whichever genre is listed first in GENRES (Action, Adventure, RPG...),
+  // which is why Action/Adventure/Simulation dominated plans and
+  // Strategy/RPG/Casual barely showed up. Breaking the tie with a stable
+  // per-topic hash instead spreads those tied topics fairly across all of
+  // their equally-valid genres, while still being deterministic (the same
+  // topic always resolves to the same genre).
+  const genre = gTop.best.length > 1 ? gTop.best[hashStr(topic) % gTop.best.length] : gTop.best[0];
   const rating = rTop.best[0];
 
   let sysScores = Object.entries(SYSTEMS).map(([sName, sRow]) => ({
@@ -1217,18 +1236,40 @@ function bestForTopic(topic, owned){
   };
 }
 
-// Greedy genre-spacing arrangement: keeps any `minGap` combos in a row
-// genre-unique (minGap=3 means no repeat within a 3-item window, i.e. no
-// two same-genre combos within 2 of each other). Rather than force an early
-// repeat when that can't be kept up, it PRUNES the topics that no longer
-// fit - once every remaining topic's genre has shown up in the last
-// (minGap-1) slots, there's no order that place them without breaking the
-// rule, so they're dropped from the plan instead of squeezed in.
+// Genre-spacing arrangement: keeps any `minGap` combos in a row genre-unique
+// (minGap=4 means no repeat within a 4-item window, i.e. no two same-genre
+// combos within 3 of each other). Rather than force an early repeat when
+// that can't be kept up, it PRUNES the topics that no longer fit - once
+// every remaining topic's genre has shown up in the last (minGap-1) slots,
+// there's no order that places them without breaking the rule, so they're
+// dropped from the plan instead of squeezed in.
+//
+// Picking which eligible genre goes next uses a smooth weighted round-robin
+// (the same technique load balancers use to distribute traffic proportionally
+// instead of always favouring the biggest queue). A plain "always take the
+// genre with the most topics left" greedy tends to burn through big genres
+// early and leave every small genre (Strategy, RPG, Casual, etc.) stacked up
+// together at the end - and a pile-up of small genres at the tail is exactly
+// what triggers the spacing rule and gets them pruned. Weighted round-robin
+// instead spreads each genre's turns evenly across the *whole* plan in
+// proportion to how many topics it has, so a genre with only 2 topics gets
+// them placed far apart from each other instead of both landing near the end
+// next to every other rare genre.
 function arrangeGenreSpaced(items, minGap){
-  minGap = minGap || 3;
+  minGap = minGap || 4;
   const groups = {};
   items.forEach(it => { (groups[it.genre] = groups[it.genre] || []).push(it); });
   Object.values(groups).forEach(arr => arr.sort((a,b) => b.overallScore - a.overallScore));
+
+  // Each genre's "weight" is how many topics it started with, so genres with
+  // more topics naturally get picked more often overall, but the running
+  // tally (current) is what actually decides each turn, and it's shared out
+  // evenly over time rather than just grabbing the largest pile every time.
+  const weight = {};
+  let totalWeight = 0;
+  Object.keys(groups).forEach(g => { weight[g] = groups[g].length; totalWeight += weight[g]; });
+  const current = {};
+  Object.keys(groups).forEach(g => current[g] = 0);
 
   const result = [];
   const pruned = [];
@@ -1236,12 +1277,12 @@ function arrangeGenreSpaced(items, minGap){
   let remaining = items.length;
   while(remaining > 0){
     const keys = Object.keys(groups).filter(g => groups[g].length > 0);
-    keys.sort((a,b) => groups[b].length - groups[a].length);
+    keys.forEach(g => { current[g] += weight[g]; });
 
     const window = recent.slice(-(minGap - 1));
-    const pick = keys.find(g => !window.includes(g));
+    const eligible = keys.filter(g => !window.includes(g));
 
-    if(!pick){
+    if(eligible.length === 0){
       // Every remaining topic's genre already appears in the last (minGap-1)
       // slots - no further placement can satisfy the spacing rule, so the
       // rest get pruned rather than jammed in as an early repeat.
@@ -1249,9 +1290,13 @@ function arrangeGenreSpaced(items, minGap){
       break;
     }
 
+    eligible.sort((a,b) => current[b] - current[a] || groups[b].length - groups[a].length);
+    const pick = eligible[0];
+
     const item = groups[pick].shift();
     result.push(item);
     recent.push(pick);
+    current[pick] -= totalWeight;
     remaining--;
   }
   return {result, pruned};
@@ -1279,7 +1324,7 @@ function generatePlan(){
   const noPlatform = candidates.filter(c => !c.compatible);
   const usable = candidates.filter(c => c.compatible);
 
-  const {result, pruned} = arrangeGenreSpaced(usable, 3);
+  const {result, pruned} = arrangeGenreSpaced(usable, 4);
   planItems = result;
   planSkipped = {
     noPlatform: noPlatform.map(c => c.topic),
@@ -1304,7 +1349,7 @@ function skipNoteHtml(){
   if(!planSkipped) return '';
   const bits = [];
   (planSkipped.noPlatform || []).forEach(t => bits.push(`<b>${t}</b> - none of your owned platforms are a strong match`));
-  (planSkipped.genreClash || []).forEach(t => bits.push(`<b>${t}</b> - couldn't be placed without repeating a genre within 2 slots`));
+  (planSkipped.genreClash || []).forEach(t => bits.push(`<b>${t}</b> - couldn't be placed without repeating a genre within 3 slots`));
   if(bits.length === 0) return '';
   return `<div class="skipnote">Left out of this plan (${bits.length}): ${bits.join('; ')}.</div>`;
 }
